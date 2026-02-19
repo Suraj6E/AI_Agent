@@ -1,4 +1,4 @@
-# Multi-Agent AI System with GLM-4-9B
+# Multi-Agent AI System — Local LLMs via Ollama
 ### Local, Offline, Learn-by-Building
 
 ---
@@ -12,7 +12,7 @@
 5. [Agent Types — All of Them](#5-agent-types--all-of-them)
 6. [What We Are Building & Why](#6-what-we-are-building--why)
 7. [Multi-Agent Architecture](#7-multi-agent-architecture)
-8. [GLM-4-9B — Honest Capabilities & Limitations](#8-glm-4-9b--honest-capabilities--limitations)
+8. [Model Capabilities & Honest Limitations](#8-model-capabilities--honest-limitations)
 9. [Future Use Case: Trade Research Automation](#9-future-use-case-trade-research-automation)
 10. [Fine-Tuning, RAG, and Knowledge Distillation — Later](#10-fine-tuning-rag-and-knowledge-distillation--later)
 11. [Implementation Plan](#11-implementation-plan)
@@ -27,7 +27,7 @@ This is a **learning project** with a practical end goal.
 
 **The learning goal:** Understand how LLM agents work from the ground up — tool calling, chain-of-thought reasoning, ReAct loops, and multi-agent coordination. No frameworks hiding what is happening. Pure Python, every component transparent and under your control.
 
-**The practical goal:** Build a working local multi-agent system that can later be tested against real use cases. Once we understand what GLM-4-9B can and cannot do reliably, we can decide what to build on top of it — including domain-specific tools like trade research automation.
+**The practical goal:** Build a working local multi-agent system that can later be tested against real use cases. The system is model-agnostic — we can swap between different LLMs (DeepSeek-R1, Llama 3.1, Qwen, etc.) via Ollama to find which works best for which tasks. Once we understand the practical limits of local models, we can decide what to build on top of them — including domain-specific tools like trade research automation.
 
 **Why local and offline?**
 - No data leaves your machine — full privacy
@@ -43,19 +43,53 @@ This is a **learning project** with a practical end goal.
 
 | Component | Spec | Notes |
 |---|---|---|
-| RAM | 32GB | Sufficient for model + system overhead |
-| GPU VRAM | 16GB | Fits GLM-4-9B in full float16 precision |
-| CPU | Latest | Good fallback for non-GPU layers |
+| OS | Windows 11 | All tools run natively on Windows |
+| RAM | 32GB | Handles 14B models with partial CPU offload |
+| GPU | NVIDIA RTX 4070 Laptop, 8GB VRAM | Fits 7-9B models fully on GPU |
+| CPU | Latest | Handles overflow layers from 14B models |
 
-### Why GLM-4-9B (not GLM-5)
+### Inference Server: Ollama
 
-GLM-5 was considered first but rejected for this hardware:
+We use **Ollama** to serve LLMs locally. Ollama handles model downloading, quantization, and serving behind an OpenAI-compatible API. It runs natively on Windows — no WSL or Docker needed.
 
-- GLM-5 has 744B parameters and requires 8 GPUs (tensor-parallel-size 8) for proper deployment
-- The only way to run GLM-5 on a single 16GB GPU is via heavy GGUF quantization (Q2/Q3), which severely degrades quality and runs very slowly due to CPU offloading
-- GLM-4-9B fits perfectly on 16GB VRAM in full float16 — fast, stable, and no quality loss from quantization
+Note: The project originally planned to use vLLM, but vLLM does not support Windows. Ollama provides the same OpenAI-compatible API with simpler setup.
 
-**GLM-4-9B is the right model for this hardware.**
+### Default Model: DeepSeek-R1 8B
+
+DeepSeek-R1 is a "thinking" model — it has **trained chain of thought** (see Section 4). It reasons through problems internally before answering, which makes it the strongest reasoning model at this size. This is our default for testing the agent system.
+
+To change the model, edit `MODEL_NAME` in `.env`. The agent code does not change.
+
+### Models We Test With
+
+All models run via Ollama. The agent code is model-agnostic — swap models by changing one line in `.env`.
+
+**Fits fully on 8GB VRAM (fast):**
+
+| Model | Best For | Command |
+|---|---|---|
+| deepseek-r1:8b | Complex reasoning, chain-of-thought (default) | `ollama pull deepseek-r1:8b` |
+| llama3.1:8b | Fast general chat, most reliable | `ollama pull llama3.1:8b` |
+| qwen2.5-coder:7b | Code generation and fixing | `ollama pull qwen2.5-coder:7b` |
+| gemma2:9b | Research, complex reasoning | `ollama pull gemma2:9b` |
+
+**14B models (partial CPU offload, slower but smarter):**
+
+| Model | Best For | Command |
+|---|---|---|
+| deepseek-r1:14b | Better reasoning than 8b | `ollama pull deepseek-r1:14b` |
+| phi4:14b | High quality general + creative | `ollama pull phi4:14b` |
+| qwen2.5-coder:14b | Stronger code than 7b | `ollama pull qwen2.5-coder:14b` |
+
+14B models don't fully fit in 8GB VRAM. Ollama automatically offloads overflow layers to CPU RAM (you have 32GB, so plenty of room). This means slower token generation but noticeably better quality. Worth testing to see if the speed trade-off is acceptable.
+
+### What "8B" and "14B" Mean
+
+8B = 8 billion parameters. Not 8GB. It is a coincidence that 8B models quantized to Q4 need ~5.5GB and happen to fit on 8GB GPUs. 14B quantized needs ~8-9GB — tight on 8GB VRAM, hence the partial CPU offload.
+
+### Can LLMs Use Shared GPU Memory (Intel iGPU)?
+
+No. The "shared memory" in Windows Task Manager is CPU RAM reserved for the Intel integrated graphics. Ollama uses your NVIDIA GPU via CUDA exclusively. It cannot use the Intel iGPU. However, Ollama can offload model layers to regular CPU RAM when VRAM is full — this is how 14B models work on your hardware.
 
 ### Why Not Claude or GPT-4 API?
 
@@ -66,7 +100,7 @@ Claude and GPT-4 class models are significantly more capable for complex reasoni
 - You cannot fine-tune them on your own data
 - They require internet
 
-The architecture is designed so you can swap the model backend later. If you want Claude for specific heavy reasoning tasks, you can route just the orchestrator to Claude while keeping specialists on GLM-4-9B.
+The architecture is designed so you can swap the model backend later. You can switch between any Ollama model by changing `.env`, or route specific agents to a cloud API if needed (e.g., orchestrator on Claude, specialists on local DeepSeek).
 
 ---
 
@@ -76,7 +110,7 @@ The architecture is designed so you can swap the model backend later. If you wan
 
 Parameters are the learned connections (weights) inside a neural network — analogous to synapses in a brain. They are numbers adjusted during training to make the model better at predicting the next token.
 
-GLM-4-9B has 9 billion such numbers. Frontier models like Claude are estimated at 200B+.
+DeepSeek-R1 8B has 8 billion such numbers. Frontier models like Claude are estimated at 200B+.
 
 ### What More Parameters Buy You
 
@@ -114,7 +148,7 @@ This is a critical concept for this project. There are two fundamentally differe
 
 Some models are specifically trained to reason internally before producing an answer. Examples include OpenAI's o1 and DeepSeek-R2. During their training process, they were rewarded for showing their reasoning — so the ability to think step by step is **baked into the weights** of the model.
 
-You cannot add trained CoT to GLM-4-9B. It was not trained this way. It is a property of the model itself, not something you can bolt on after the fact.
+You cannot add trained CoT to most open-source models. However, **DeepSeek-R1 — our default model — does have trained CoT.** This is one reason we chose it. It reasons through problems internally before answering, which is a significant advantage over other models at this size.
 
 ### Prompted Chain of Thought (What We Build)
 
@@ -128,9 +162,9 @@ This is what we are implementing in this project.
 
 **The chain is yours. The quality of reasoning within each step depends on the model's capacity.**
 
-You can design a 10-step reasoning chain, but a 9B model might lose coherence by step 6 where a 200B model holds together through all 10. The chain structure helps the model stay organized, but it does not make the model smarter — it helps the model use its existing intelligence more consistently.
+You can design a 10-step reasoning chain, but a 9B model might lose coherence by step 6 where a 200B model holds together through all 10. The chain structure helps the model stay organized, but it does not make the model smarter — it helps the model use its existing intelligence more consistently. With DeepSeek-R1, we get both: trained internal reasoning plus our prompted reasoning structure on top.
 
-This is one of the things we want to test: where does GLM-4-9B start losing coherence in a prompted reasoning chain? Understanding this tells us what tasks are realistic for it.
+This is one of the things we want to test: where does each model start losing coherence in a prompted reasoning chain? And does DeepSeek-R1's trained CoT give it a meaningful advantage over other 8B models in our agent system?
 
 ---
 
@@ -247,7 +281,7 @@ Merges into Final Answer
 
 **1. Prompted Chain of Thought (ReAct)**
 
-Can we design a reasoning structure that makes GLM-4-9B more reliable? At what point does the model lose coherence in a multi-step chain? We build ReAct agents and test their limits — seeing where prompted CoT helps and where the model's 9B parameter ceiling becomes the bottleneck.
+Can we design a reasoning structure that makes local models more reliable? At what point does the model lose coherence in a multi-step chain? We build ReAct agents and test their limits — seeing where prompted CoT helps and where the model's parameter ceiling becomes the bottleneck.
 
 **2. Multi-Agent Coordination**
 
@@ -255,10 +289,11 @@ Does splitting a complex task across multiple focused agents produce better resu
 
 ### What We Want to Answer By The End
 
-- Does ReAct (prompted CoT) measurably improve output quality over plain tool-calling for GLM-4-9B?
+- Does ReAct (prompted CoT) measurably improve output quality over plain tool-calling for local models?
+- Does DeepSeek-R1's trained CoT give it a meaningful edge over other 8B models in an agent system?
 - Does multi-agent produce better results than a single ReAct agent for complex tasks?
-- What types of tasks is GLM-4-9B actually reliable for?
-- Where does it consistently fail, and is that a prompting problem or a model capacity problem?
+- What types of tasks are local 7-14B models actually reliable for?
+- Where do they consistently fail, and is that a prompting problem or a model capacity problem?
 - Is this system useful enough to build real tools on top of (like trade research automation)?
 
 ---
@@ -326,38 +361,40 @@ Does splitting a complex task across multiple focused agents produce better resu
 
 ---
 
-## 8. GLM-4-9B — Honest Capabilities & Limitations
+## 8. Model Capabilities & Honest Limitations
 
-### What It Does Well
+This section describes what to expect from local 7-14B parameter models in general. Specific strengths vary by model — DeepSeek-R1 is stronger at reasoning, Qwen is better at code, Llama is faster and more reliable for chat. Part of this project is testing these differences.
+
+### What Local 7-14B Models Do Well
 
 - Code generation for clear, scoped tasks (write a function, fix a bug, explain code)
 - Following structured output instructions (JSON, markdown)
-- Bilingual — English and Chinese natively
-- Tool calling — understands when to call tools and formats arguments correctly
+- Tool calling — understanding when to call tools and formatting arguments correctly
 - Summarization and Q&A over provided documents
 - Multi-turn conversation with memory
 - **Small, well-defined tasks** — where instructions are clear and output format is constrained
+- DeepSeek-R1 specifically: chain-of-thought reasoning (trained, not just prompted)
 
-### Where It Struggles Compared to Frontier Models (Claude, GPT-4)
+### Where They Struggle Compared to Frontier Models (Claude, GPT-4)
 
-- **Complex multi-step reasoning** — more likely to lose track mid-chain
+- **Complex multi-step reasoning** — more likely to lose track mid-chain (though DeepSeek-R1 is notably better here than other 8B models)
 - **System design and architecture decisions** — tends toward generic answers
 - **Math-heavy code** (ML algorithms, numerical methods) — inconsistent accuracy
 - **Deep domain expertise** — no specialty, jack of all trades
-- **Self-awareness of its own errors** — less likely to catch its own mistakes
+- **Self-awareness of own errors** — less likely to catch own mistakes
 - **Long reasoning chains** — a prompted 10-step chain may degrade after step 5-6
 
 ### The Bottom Line
 
-GLM-4-9B is best suited for **specific, well-scoped, structured tasks** rather than broad general reasoning. Multi-agent helps it stay focused on such tasks. The combination of ReAct + multi-agent gets the most out of what the model can do — but it does not turn a 9B model into a frontier model.
+Local 7-14B models are best suited for **specific, well-scoped, structured tasks** rather than broad general reasoning. Multi-agent helps them stay focused on such tasks. The combination of ReAct + multi-agent gets the most out of what these models can do — but it does not turn a small model into a frontier model.
 
-Part of this project is discovering exactly where that line is.
+Part of this project is discovering exactly where that line is, and whether different models draw that line in different places.
 
 ---
 
 ## 9. Future Use Case: Trade Research Automation
 
-> **Status: Not finalized.** This use case will be tested and refined after the core multi-agent system is working and we have a clear understanding of GLM-4-9B's practical limits.
+> **Status: Not finalized.** This use case will be tested and refined after the core multi-agent system is working and we have a clear understanding of the practical limits of local models.
 
 ### The Idea
 
@@ -378,7 +415,7 @@ This is exactly the kind of task where a multi-agent system with a 9B model coul
 
 ### Path Forward
 
-Once the multi-agent system is tested, we will evaluate whether GLM-4-9B handles this use case reliably. If it does, the next step could be fine-tuning, RAG, or knowledge distillation to create a smaller specialized tool. That decision comes after testing, not before.
+Once the multi-agent system is tested, we will evaluate whether local models handle this use case reliably. If they do, the next step could be fine-tuning, RAG, or knowledge distillation to create a smaller specialized tool. That decision comes after testing, not before.
 
 ---
 
@@ -388,11 +425,11 @@ These are three paths for making the system domain-specific. We document them he
 
 ### Fine-Tuning
 
-Takes the base GLM-4-9B weights and further trains them on your specific domain data. Shifts the model's probability distribution toward your domain without erasing general knowledge.
+Takes the base model weights and further trains them on your specific domain data. Shifts the model's probability distribution toward your domain without erasing general knowledge.
 
 **When it makes sense:** You have 500-1000+ high quality examples in a specific domain, and the base model is close but not accurate enough on that domain.
 
-**Tools:** Unsloth + LoRA (memory efficient, works on 16GB GPU).
+**Tools:** Unsloth + LoRA (memory efficient, works on 8GB GPU).
 
 ### RAG (Retrieval-Augmented Generation)
 
@@ -404,26 +441,26 @@ Instead of training new knowledge into the model, you store your domain data in 
 
 ### Knowledge Distillation
 
-Use GLM-4-9B (or a larger model) as a "teacher" to generate labeled data, then train a much smaller, faster model (the "student") to mimic the teacher on a narrow task.
+Use a larger model (or our best local model) as a "teacher" to generate labeled data, then train a much smaller, faster model (the "student") to mimic the teacher on a narrow task.
 
-**When it makes sense:** You need a very fast, lightweight model for a specific task (like classifying news events in a trading pipeline) and GLM-4-9B is too slow or heavy for production use.
+**When it makes sense:** You need a very fast, lightweight model for a specific task (like classifying news events in a trading pipeline) and even an 8B model is too slow or heavy for production use.
 
-**Example path:** GLM-4-9B labels 10,000 news articles → train a small classifier on those labels → classifier runs in milliseconds in your pipeline.
+**Example path:** DeepSeek-R1 labels 10,000 news articles → train a small classifier on those labels → classifier runs in milliseconds in your pipeline.
 
 ---
 
 ## 11. Implementation Plan
 
-### Phase 1: Foundation — Get GLM-4-9B Running
+### Phase 1: Foundation — Get the LLM Running
 
-**Goal:** vLLM serving GLM-4-9B locally, a basic agent loop that can call tools and return answers.
+**Goal:** Ollama serving DeepSeek-R1 locally, a basic agent loop that can call tools and return answers.
 
 | Step | What | Details |
 |---|---|---|
-| 1 | Environment setup | Install dependencies, create project structure, `.env` config |
-| 2 | Download GLM-4-9B | Via `huggingface_hub` to `./models/glm-4-9b-chat`, safetensors format |
-| 3 | vLLM server | Serve locally with `--trust-remote-code`, verify with curl test |
-| 4 | LLM client | `core/llm_client.py` — HTTP communication with vLLM, chat function |
+| 1 | Environment setup | Install dependencies (`pip install requests python-dotenv`), create project structure |
+| 2 | Download model | `ollama pull deepseek-r1:8b` — Ollama handles everything |
+| 3 | Verify server | Run `python start_server.py` — checks Ollama is running and model is available |
+| 4 | LLM client | `core/llm_client.py` — HTTP communication with Ollama's OpenAI-compatible API |
 | 5 | Tool definitions | `core/tools.py` — implement tools, JSON schemas, executor dispatcher |
 | 6 | Base agent class | `core/agent.py` — tool-calling loop, history management, max rounds safety |
 
@@ -476,7 +513,7 @@ Use GLM-4-9B (or a larger model) as a "teacher" to generate labeled data, then t
 
 ### Phase 5: Test with Real Use Case
 
-**Goal:** Apply the system to a real task and evaluate GLM-4-9B's practical limits.
+**Goal:** Apply the system to a real task and evaluate practical limits of local models.
 
 | Step | What | Details |
 |---|---|---|
@@ -493,15 +530,14 @@ Use GLM-4-9B (or a larger model) as a "teacher" to generate labeled data, then t
 multi_agent/
 │
 ├── README.md                    ← This document
-├── .env                         ← Configuration (model path, vLLM URL, etc.)
-├── requirements.txt             ← All Python dependencies
+├── .env                         ← Configuration (model name, Ollama URL, etc.)
+├── requirements.txt             ← Python dependencies (minimal — requests, dotenv)
 ├── run.py                       ← Entry point — interactive loop
-│
-├── models/
-│   └── glm-4-9b-chat/          ← Downloaded model weights (local)
+├── download_model.py            ← Pulls model via Ollama
+├── start_server.py              ← Health check — verifies Ollama is running
 │
 ├── core/
-│   ├── llm_client.py            ← vLLM HTTP communication
+│   ├── llm_client.py            ← Ollama API communication
 │   ├── agent.py                 ← Base agent class with ReAct loop
 │   └── tools.py                 ← Tool functions, schemas, executor
 │
@@ -526,14 +562,14 @@ multi_agent/
 
 | Component | Technology | Why |
 |---|---|---|
-| LLM | GLM-4-9B | Fits 16GB VRAM, MIT license, good tool calling |
-| Inference server | vLLM | OpenAI-compatible API, fast, handles batching |
+| LLM (default) | DeepSeek-R1 8B via Ollama | Best reasoning at this size, trained CoT, fits 8GB VRAM |
+| LLMs (testing) | Llama 3.1, Qwen2.5-Coder, Gemma2, Phi-4 | Different strengths — swap via `.env` |
+| Inference server | Ollama | Runs on Windows, OpenAI-compatible API, handles quantization |
 | Agent framework | Pure Python | Full transparency, no framework lock-in |
-| Model download | huggingface_hub | Official HuggingFace download tool |
 | HTTP client | requests | Simple, no overhead |
 | Code execution tool | subprocess | Built-in Python, no extra dependencies |
-| Fine-tuning (later) | Unsloth + LoRA | Memory efficient, works on 16GB GPU |
-| Vector DB (later) | ChromaDB or Qdrant | Local, no cloud dependency |
+| Fine-tuning (later) | Unsloth + LoRA | Memory efficient, works on 8GB GPU |
+| Vector DB for RAG (future) | ChromaDB or Qdrant | Local, no cloud dependency |
 
 ---
 
@@ -541,9 +577,11 @@ multi_agent/
 
 | Decision | Choice | Reason |
 |---|---|---|
-| GLM-5 vs GLM-4-9B | GLM-4-9B | GLM-5 requires 8 GPUs, too large for hardware |
+| Inference server | Ollama (not vLLM) | vLLM doesn't run on Windows. Ollama runs natively, same OpenAI-compatible API |
+| Default model | DeepSeek-R1 8B | Best reasoning at this size, trained chain-of-thought |
+| Single model vs multi | Multi-model testing | Different models excel at different tasks — swap via `.env` |
 | Framework vs Pure Python | Pure Python | Full control, no abstraction hiding bugs |
 | Agent patterns | ReAct + Multi-Agent | ReAct for reasoning, multi-agent for task coordination |
-| Trained vs Prompted CoT | Prompted (ReAct) | Cannot add trained CoT to GLM-4-9B, but can design reasoning chains via prompts |
-| Fine-tune vs RAG vs Distillation | Decide after testing | Need to understand GLM-4-9B's limits on real tasks first |
+| Trained vs Prompted CoT | Both | DeepSeek-R1 has trained CoT; we add prompted CoT (ReAct) on top |
+| Fine-tune vs RAG vs Distillation | Decide after testing | Need to understand model limits on real tasks first |
 | Local vs API model | Local | Privacy, cost, and fine-tuning control |

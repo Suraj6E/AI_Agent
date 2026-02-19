@@ -1,8 +1,3 @@
 # Phase 1 dependencies
-vllm
-transformers
-huggingface_hub
-torch
-accelerate
 requests
 python-dotenv
