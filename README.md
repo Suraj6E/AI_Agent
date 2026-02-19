@@ -1,33 +1,38 @@
 # Multi-Agent AI System with GLM-4-9B
-### Complete Documentation & Implementation Plan
+### Local, Offline, Learn-by-Building
 
 ---
 
 ## Table of Contents
 
-1. [Project Overview](#1-project-overview)
+1. [Why This Project Exists](#1-why-this-project-exists)
 2. [Hardware & Model Selection](#2-hardware--model-selection)
 3. [Understanding LLMs — Parameters & Intelligence](#3-understanding-llms--parameters--intelligence)
-4. [Agent Types — How They Work](#4-agent-types--how-they-work)
-5. [Multi-Agent Architecture](#5-multi-agent-architecture)
-6. [GLM-4-9B Capabilities & Honest Limitations](#6-glm-4-9b-capabilities--honest-limitations)
-7. [Fine-Tuning — When & Why](#7-fine-tuning--when--why)
-8. [Implementation Plan](#8-implementation-plan)
-9. [Project File Structure](#9-project-file-structure)
-10. [Technology Stack](#10-technology-stack)
+4. [Chain of Thought — Trained vs Prompted](#4-chain-of-thought--trained-vs-prompted)
+5. [Agent Types — All of Them](#5-agent-types--all-of-them)
+6. [What We Are Building & Why](#6-what-we-are-building--why)
+7. [Multi-Agent Architecture](#7-multi-agent-architecture)
+8. [GLM-4-9B — Honest Capabilities & Limitations](#8-glm-4-9b--honest-capabilities--limitations)
+9. [Future Use Case: Trade Research Automation](#9-future-use-case-trade-research-automation)
+10. [Fine-Tuning, RAG, and Knowledge Distillation — Later](#10-fine-tuning-rag-and-knowledge-distillation--later)
+11. [Implementation Plan](#11-implementation-plan)
+12. [Project Structure](#12-project-structure)
+13. [Technology Stack](#13-technology-stack)
 
 ---
 
-## 1. Project Overview
+## 1. Why This Project Exists
 
-This project builds a **local, offline, private multi-agent AI system** powered by GLM-4-9B running on your personal hardware via vLLM. The system uses pure Python with no external AI frameworks — every component is transparent and under your control.
+This is a **learning project** with a practical end goal.
 
-The core idea: an Orchestrator agent receives a complex task, breaks it into subtasks, delegates to specialized agents, and merges the results into a final answer. Each specialist agent internally uses a ReAct loop (Reasoning + Acting) to work through its subtask step by step.
+**The learning goal:** Understand how LLM agents work from the ground up — tool calling, chain-of-thought reasoning, ReAct loops, and multi-agent coordination. No frameworks hiding what is happening. Pure Python, every component transparent and under your control.
+
+**The practical goal:** Build a working local multi-agent system that can later be tested against real use cases. Once we understand what GLM-4-9B can and cannot do reliably, we can decide what to build on top of it — including domain-specific tools like trade research automation.
 
 **Why local and offline?**
 - No data leaves your machine — full privacy
 - No per-token API cost after hardware
-- Full control over the model — can fine-tune on your own data
+- Full control over the model — can fine-tune on your own data later
 - Works without internet (except tools that explicitly need it, like web search)
 
 ---
@@ -35,6 +40,7 @@ The core idea: an Orchestrator agent receives a complex task, breaks it into sub
 ## 2. Hardware & Model Selection
 
 ### Your Hardware
+
 | Component | Spec | Notes |
 |---|---|---|
 | RAM | 32GB | Sufficient for model + system overhead |
@@ -43,7 +49,7 @@ The core idea: an Orchestrator agent receives a complex task, breaks it into sub
 
 ### Why GLM-4-9B (not GLM-5)
 
-GLM-5 was considered first but rejected for this hardware. The reason:
+GLM-5 was considered first but rejected for this hardware:
 
 - GLM-5 has 744B parameters and requires 8 GPUs (tensor-parallel-size 8) for proper deployment
 - The only way to run GLM-5 on a single 16GB GPU is via heavy GGUF quantization (Q2/Q3), which severely degrades quality and runs very slowly due to CPU offloading
@@ -53,13 +59,14 @@ GLM-5 was considered first but rejected for this hardware. The reason:
 
 ### Why Not Claude or GPT-4 API?
 
-Claude and GPT-4 class models are more capable for complex reasoning, but:
+Claude and GPT-4 class models are significantly more capable for complex reasoning. However:
+
 - Cost per token adds up quickly for an agent system that makes many calls
 - Your data (prompts, tool results, code) leaves your machine
 - You cannot fine-tune them on your own data
 - They require internet
 
-The architecture is designed so you can swap the model backend later if needed. If you want Claude for specific heavy reasoning tasks, you can route just the orchestrator to Claude while keeping specialists on GLM-4-9B.
+The architecture is designed so you can swap the model backend later. If you want Claude for specific heavy reasoning tasks, you can route just the orchestrator to Claude while keeping specialists on GLM-4-9B.
 
 ---
 
@@ -67,21 +74,21 @@ The architecture is designed so you can swap the model backend later if needed. 
 
 ### What Parameters Are
 
-Parameters are the learned connections (weights) inside a neural network — analogous to synapses in a brain. They are numbers that get adjusted during training to make the model better at predicting the next token.
+Parameters are the learned connections (weights) inside a neural network — analogous to synapses in a brain. They are numbers adjusted during training to make the model better at predicting the next token.
 
-GLM-4-9B has 9 billion such numbers. Claude Sonnet 4.6 has an estimated 200B+.
+GLM-4-9B has 9 billion such numbers. Frontier models like Claude are estimated at 200B+.
 
 ### What More Parameters Buy You
 
-**Pattern storage capacity** — more parameters means the model memorized more relationships between concepts. A 9B model has retained far fewer patterns than a 200B model from training.
+**Pattern storage capacity** — more parameters means the model memorized more relationships between concepts. A 9B model retains far fewer patterns than a 200B model from training.
 
-**Reasoning depth** — larger models can hold more computational "context" internally while working through a problem. This is why big models handle multi-step reasoning more reliably.
+**Reasoning depth** — larger models can hold more computational "context" internally while working through a problem. This is why bigger models handle multi-step reasoning more reliably.
 
-**Generalization** — bigger models are better at applying knowledge to genuinely novel situations. Smaller models tend to be more rigid and pattern-matchy.
+**Generalization** — bigger models are better at applying knowledge to genuinely novel situations. Smaller models tend to be more rigid and pattern-matching.
 
-**Nuance and calibration** — knowing when to say "it depends," handling ambiguity, and knowing the limits of their own knowledge.
+**Nuance and calibration** — knowing when to say "it depends," handling ambiguity, and recognizing the limits of their own knowledge.
 
-### But Parameters Are Not Everything
+### Parameters Are Not Everything
 
 | Factor | What It Affects |
 |---|---|
@@ -91,15 +98,45 @@ GLM-4-9B has 9 billion such numbers. Claude Sonnet 4.6 has an estimated 200B+.
 | Quantization | Reduces numerical precision, slightly reduces quality |
 | Context window | How much the model can "see" at once |
 
-A well-trained 9B model beats a poorly trained 50B model on specific tasks. And a 9B model fine-tuned on your specific codebase can outperform a general 200B model on that exact domain.
+A well-trained 9B model beats a poorly trained 50B model on specific tasks. A 9B model fine-tuned on your specific domain can outperform a general 200B model on that exact domain.
 
 ### The Simple Analogy
 
-Parameters are like RAM. More RAM lets you run more complex programs. But RAM alone doesn't make software better — the quality of the code (training data and method) matters equally. A well-written program on 16GB RAM can outperform a bloated program on 64GB RAM for the right task.
+Parameters are like RAM. More RAM lets you run more complex programs. But RAM alone does not make software better — the quality of the code (training data and method) matters equally. A well-written program on 16GB RAM can outperform a bloated program on 64GB RAM for the right task.
 
 ---
 
-## 4. Agent Types — How They Work
+## 4. Chain of Thought — Trained vs Prompted
+
+This is a critical concept for this project. There are two fundamentally different ways an LLM can "think step by step."
+
+### Trained Chain of Thought (CoT)
+
+Some models are specifically trained to reason internally before producing an answer. Examples include OpenAI's o1 and DeepSeek-R2. During their training process, they were rewarded for showing their reasoning — so the ability to think step by step is **baked into the weights** of the model.
+
+You cannot add trained CoT to GLM-4-9B. It was not trained this way. It is a property of the model itself, not something you can bolt on after the fact.
+
+### Prompted Chain of Thought (What We Build)
+
+You design the reasoning structure yourself via prompts. You tell the model: "Before answering, think through the problem step by step in this format." The model follows your structure.
+
+**ReAct** (Reasoning + Acting) is exactly this — we impose a `Thought → Act → Observe` pattern through the system prompt. The model did not learn this pattern during training. We are telling it to follow this pattern at inference time.
+
+This is what we are implementing in this project.
+
+### The Key Insight
+
+**The chain is yours. The quality of reasoning within each step depends on the model's capacity.**
+
+You can design a 10-step reasoning chain, but a 9B model might lose coherence by step 6 where a 200B model holds together through all 10. The chain structure helps the model stay organized, but it does not make the model smarter — it helps the model use its existing intelligence more consistently.
+
+This is one of the things we want to test: where does GLM-4-9B start losing coherence in a prompted reasoning chain? Understanding this tells us what tasks are realistic for it.
+
+---
+
+## 5. Agent Types — All of Them
+
+There are three main agent patterns, each building on the last. We describe all three here for completeness. **This project implements two of them: ReAct agents and Multi-Agent orchestration.**
 
 ### Type 1: Tool-Calling Agent
 
@@ -117,13 +154,18 @@ Tool executes → returns result
 LLM formulates final answer
 ```
 
-Best for: single focused tasks where the right tool is obvious. Example: "What is 157 * 23?" → calls calculate tool.
+**How it works:** The model receives a list of available tools (as JSON schemas) in its prompt. When it decides a tool is needed, it outputs a structured tool call (function name + arguments). Your code parses that output, executes the function, and feeds the result back to the model. The model then either calls another tool or produces a final answer.
+
+**Best for:** Single focused tasks where the right tool is obvious.
+**Example:** "What is 157 * 23?" → calls calculator tool → returns 3611.
+
+**We are not using this as a standalone pattern** because it lacks explicit reasoning. The model jumps straight to tool calls without explaining why, which makes debugging hard and errors invisible.
 
 ---
 
-### Type 2: ReAct Agent (Reasoning + Acting)
+### Type 2: ReAct Agent (Reasoning + Acting) ← We build this
 
-Adds an explicit **Thought step** before every action. The model reasons out loud about what it knows, what it needs, and why it's choosing a particular tool before acting.
+Adds an explicit **Thought step** before every action. The model reasons out loud about what it knows, what it needs, and why it is choosing a particular tool — before acting.
 
 ```
 User Input
@@ -141,13 +183,22 @@ User Input
 Final Answer
 ```
 
-Why it's better than plain tool-calling: forcing explicit reasoning before each action catches mistakes early, prevents the model from jumping to conclusions, and makes the agent's behavior debuggable — you can read the Thought steps and see exactly where it went wrong.
+**How it works:** The system prompt instructs the model to always output a `Thought` before deciding on an `Action`. This is **prompted chain of thought** — we design the reasoning format, the model fills it in. After each tool result (`Observe`), the model thinks again before proceeding.
 
-Best for: complex multi-step tasks requiring sequential reasoning. Example: "Research the latest papers on neuro-symbolic AI and write a summary."
+**Why it is better than plain tool-calling:**
+- Forcing explicit reasoning before each action catches mistakes early
+- Prevents the model from jumping to conclusions
+- Makes the agent's behavior fully debuggable — you can read the Thought steps and see exactly where it went wrong
+- Gives the model a "scratchpad" to track what it has done and what is left
+
+**Best for:** Multi-step tasks requiring sequential reasoning.
+**Example:** "Find the latest unemployment data and calculate the year-over-year change."
+
+**This is our core building block.** Every agent in this system uses a ReAct loop internally.
 
 ---
 
-### Type 3: Multi-Agent System
+### Type 3: Multi-Agent System ← We build this
 
 Multiple specialized LLM instances, each with their own role, system prompt, tools, and memory — coordinated by a central Orchestrator.
 
@@ -166,31 +217,63 @@ Orchestrator receives all results
 Merges into Final Answer
 ```
 
-Each specialist agent is itself a ReAct agent — so multi-agent is ReAct agents coordinated by an orchestrator.
+**How it works:** The Orchestrator receives a task, uses the LLM to break it into subtasks (as a JSON plan), then delegates each subtask to the appropriate specialist agent. Each specialist is itself a ReAct agent — so it reasons through its subtask step by step. When all specialists finish, the Orchestrator merges their results via one final LLM call.
 
-Why multi-agent genuinely helps (even with the same base model):
+**Why multi-agent genuinely helps (even with the same base model):**
 
 - **Focused context per agent** — each agent's prompt is smaller and domain-specific. LLMs perform measurably better with focused, constrained prompts than open-ended complex ones
-- **Separation of concerns** — a researcher isn't distracted by coding concerns
-- **Error catching via reviewer** — a fresh agent reviewing an output catches errors the writer missed
+- **Separation of concerns** — a researcher is not distracted by coding concerns
+- **Error catching via reviewer** — a fresh agent reviewing an output catches errors the original agent missed
 - **Longer effective reasoning chain** — the chain of agents can reason across more steps than any single agent's context window allows
-- **Parallel execution** — researcher and coder can work simultaneously on different subtasks
+- **Parallel execution** — multiple agents can work simultaneously on different subtasks
 
-The honest limitation: multi-agent raises how consistently you operate near the model's intelligence ceiling, but does not raise the ceiling itself. For complex deep reasoning tasks, all agents hit the same wall.
+**The honest limitation:** Multi-agent raises how consistently you operate near the model's intelligence ceiling, but does not raise the ceiling itself. Think of it as: one person doing 5 different jobs makes more mistakes than 5 people each doing 1 job — but they are all equally skilled. For tasks that require raw reasoning power beyond what the model can do, multi-agent will not fix that.
 
 ---
 
-## 5. Multi-Agent Architecture
+### Summary: What We Are Implementing
+
+| Agent Type | Using It? | Role in This Project |
+|---|---|---|
+| Tool-Calling Agent | **No** (as standalone) | Subsumed by ReAct — every ReAct agent uses tool calling, but with reasoning added |
+| ReAct Agent | **Yes** | The core building block. Every specialist agent uses a ReAct loop internally |
+| Multi-Agent System | **Yes** | Orchestrator + specialists. Coordinates multiple ReAct agents |
+
+---
+
+## 6. What We Are Building & Why
+
+### The Two Things We Want to Learn
+
+**1. Prompted Chain of Thought (ReAct)**
+
+Can we design a reasoning structure that makes GLM-4-9B more reliable? At what point does the model lose coherence in a multi-step chain? We build ReAct agents and test their limits — seeing where prompted CoT helps and where the model's 9B parameter ceiling becomes the bottleneck.
+
+**2. Multi-Agent Coordination**
+
+Does splitting a complex task across multiple focused agents produce better results than one agent doing everything? We build an orchestrator and specialists to test this directly — same model, same hardware, but different architectural patterns.
+
+### What We Want to Answer By The End
+
+- Does ReAct (prompted CoT) measurably improve output quality over plain tool-calling for GLM-4-9B?
+- Does multi-agent produce better results than a single ReAct agent for complex tasks?
+- What types of tasks is GLM-4-9B actually reliable for?
+- Where does it consistently fail, and is that a prompting problem or a model capacity problem?
+- Is this system useful enough to build real tools on top of (like trade research automation)?
+
+---
+
+## 7. Multi-Agent Architecture
 
 ### Overview
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                    USER TASK                            │
+│                    USER TASK                             │
 └────────────────────────┬────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────┐
-│                  ORCHESTRATOR                           │
+│                  ORCHESTRATOR                            │
 │  - Receives task                                        │
 │  - Produces JSON plan with subtasks                     │
 │  - Delegates to specialists                             │
@@ -198,17 +281,17 @@ The honest limitation: multi-agent raises how consistently you operate near the 
 └──────┬──────────────────┬──────────────────┬────────────┘
        ↓                  ↓                  ↓
 ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐
-│  RESEARCHER  │  │    CODER     │  │    REVIEWER      │
-│              │  │              │  │                  │
-│ Tools:       │  │ Tools:       │  │ Tools:           │
-│ - web_search │  │ - run_code   │  │ - read_file      │
-│ - read_file  │  │ - write_file │  │ - run_code       │
-│              │  │ - read_file  │  │                  │
-│ ReAct loop   │  │ ReAct loop   │  │ ReAct loop       │
+│  RESEARCHER  │  │    CODER     │  │    REVIEWER       │
+│              │  │              │  │                   │
+│ Tools:       │  │ Tools:       │  │ Tools:            │
+│ - web_search │  │ - run_code   │  │ - read_file       │
+│ - read_file  │  │ - write_file │  │ - run_code        │
+│              │  │ - read_file  │  │                   │
+│ ReAct loop   │  │ ReAct loop   │  │ ReAct loop        │
 └──────────────┘  └──────────────┘  └──────────────────┘
        ↓                  ↓                  ↓
 ┌─────────────────────────────────────────────────────────┐
-│              ORCHESTRATOR MERGES RESULTS                │
+│              ORCHESTRATOR MERGES RESULTS                 │
 └─────────────────────────────────────────────────────────┘
                          ↓
                    FINAL ANSWER
@@ -232,18 +315,18 @@ The honest limitation: multi-agent raises how consistently you operate near the 
 **Coder Agent**
 - Specializes in writing, running, and debugging Python code
 - Primary tools: run_python_code, write_file, read_file
-- Uses ReAct internally: writes code → runs it → reads error → fixes → runs again
-- Returns working code + output to the orchestrator
+- Self-corrects on errors — runs code, reads error, fixes, runs again
+- Returns working code + execution output to the orchestrator
 
-**Reviewer Agent** *(planned for Phase 2)*
+**Reviewer Agent** *(Phase 4)*
 - Receives the output from researcher or coder
 - Checks for errors, logical gaps, or code bugs
-- Returns a review verdict: pass, or specific feedback to fix
-- Creates a feedback loop — coder fixes based on reviewer's notes
+- Returns a review verdict: PASS, or specific FEEDBACK to fix
+- Creates a feedback loop — coder fixes based on reviewer notes
 
 ---
 
-## 6. GLM-4-9B Capabilities & Honest Limitations
+## 8. GLM-4-9B — Honest Capabilities & Limitations
 
 ### What It Does Well
 
@@ -253,121 +336,112 @@ The honest limitation: multi-agent raises how consistently you operate near the 
 - Tool calling — understands when to call tools and formats arguments correctly
 - Summarization and Q&A over provided documents
 - Multi-turn conversation with memory
+- **Small, well-defined tasks** — where instructions are clear and output format is constrained
 
 ### Where It Struggles Compared to Frontier Models (Claude, GPT-4)
 
-- Complex multi-step reasoning — more likely to lose track mid-chain
-- System design and architecture decisions — tends toward generic answers
-- Math-heavy code (ML algorithms, numerical methods) — inconsistent accuracy
-- Deep domain expertise — no specialty, jack of all trades
-- Self-awareness of its own errors — less likely to catch its own mistakes
+- **Complex multi-step reasoning** — more likely to lose track mid-chain
+- **System design and architecture decisions** — tends toward generic answers
+- **Math-heavy code** (ML algorithms, numerical methods) — inconsistent accuracy
+- **Deep domain expertise** — no specialty, jack of all trades
+- **Self-awareness of its own errors** — less likely to catch its own mistakes
+- **Long reasoning chains** — a prompted 10-step chain may degrade after step 5-6
 
-### Honest Comparison: GLM-4-9B vs Claude Sonnet 4.6 for Coding
+### The Bottom Line
 
-Claude Sonnet 4.6 wins significantly. The parameter gap alone (9B vs estimated 200B+) means Claude handles complex, multi-file, architecturally nuanced code far better.
+GLM-4-9B is best suited for **specific, well-scoped, structured tasks** rather than broad general reasoning. Multi-agent helps it stay focused on such tasks. The combination of ReAct + multi-agent gets the most out of what the model can do — but it does not turn a 9B model into a frontier model.
 
-The only reasons to choose GLM-4-9B over Claude for coding:
-- Your code is private and cannot leave your machine
-- Cost — Claude API charges per token, GLM-4-9B is free after hardware
-- You want to fine-tune it on your specific codebase
+Part of this project is discovering exactly where that line is.
 
 ---
 
-## 7. Fine-Tuning — When & Why
+## 9. Future Use Case: Trade Research Automation
 
-### What Fine-Tuning Does
+> **Status: Not finalized.** This use case will be tested and refined after the core multi-agent system is working and we have a clear understanding of GLM-4-9B's practical limits.
 
-Fine-tuning takes the base GLM-4-9B weights (trained on 28.5T tokens of general internet data) and further trains them on your specific domain data. It shifts the model's probability distribution toward your domain without erasing general knowledge.
+### The Idea
 
-It does not make the model smarter in general. It makes it more accurate and consistent within your specific domain.
+Automate the processing of trade-related information — news articles, major announcements, and pre-scheduled economic events. The goal is not sentiment analysis but **structured automation**: knowing what events are happening, when, and converting unstructured text into structured, actionable data.
 
-### The "Bias" Question
+### What This Would Look Like
 
-Fine-tuning does introduce bias — intentionally. This is the goal. You are trading broad mediocrity for narrow excellence.
+- **Input:** Unstructured text (news headlines, economic calendar entries, announcement text)
+- **Output:** Structured data (event type, date/time, affected instruments, severity)
+- **Interface:** Natural language commands instead of writing a script for each case — turning unstructured data into structured commands
 
-This only becomes a problem when:
+### Why It Fits This Architecture
 
-| Problem | Cause | Solution |
+This is exactly the kind of task where a multi-agent system with a 9B model could work well:
+- Each subtask is small and well-scoped (parse this text, classify this event, extract this date)
+- The output format is structured and constrained
+- It does not require deep open-ended reasoning
+
+### Path Forward
+
+Once the multi-agent system is tested, we will evaluate whether GLM-4-9B handles this use case reliably. If it does, the next step could be fine-tuning, RAG, or knowledge distillation to create a smaller specialized tool. That decision comes after testing, not before.
+
+---
+
+## 10. Fine-Tuning, RAG, and Knowledge Distillation — Later
+
+These are three paths for making the system domain-specific. We document them here for reference. **None are being implemented now** — they depend on what we learn from testing the base system.
+
+### Fine-Tuning
+
+Takes the base GLM-4-9B weights and further trains them on your specific domain data. Shifts the model's probability distribution toward your domain without erasing general knowledge.
+
+**When it makes sense:** You have 500-1000+ high quality examples in a specific domain, and the base model is close but not accurate enough on that domain.
+
+**Tools:** Unsloth + LoRA (memory efficient, works on 16GB GPU).
+
+### RAG (Retrieval-Augmented Generation)
+
+Instead of training new knowledge into the model, you store your domain data in a vector database and retrieve relevant chunks at query time. The model reasons over the retrieved context.
+
+**When it makes sense:** You have a large corpus of documents the model needs to reference, and the information changes frequently.
+
+**Tools:** ChromaDB or Qdrant (local, no cloud dependency).
+
+### Knowledge Distillation
+
+Use GLM-4-9B (or a larger model) as a "teacher" to generate labeled data, then train a much smaller, faster model (the "student") to mimic the teacher on a narrow task.
+
+**When it makes sense:** You need a very fast, lightweight model for a specific task (like classifying news events in a trading pipeline) and GLM-4-9B is too slow or heavy for production use.
+
+**Example path:** GLM-4-9B labels 10,000 news articles → train a small classifier on those labels → classifier runs in milliseconds in your pipeline.
+
+---
+
+## 11. Implementation Plan
+
+### Phase 1: Foundation — Get GLM-4-9B Running
+
+**Goal:** vLLM serving GLM-4-9B locally, a basic agent loop that can call tools and return answers.
+
+| Step | What | Details |
 |---|---|---|
-| Overfitting | Training data too small | Use 1000+ examples minimum |
-| Catastrophic forgetting | Data too narrow | Mix 80% domain + 20% general data |
-| Learning bad patterns | Low quality data | Curate carefully — 500 good examples beats 5000 bad ones |
-| Brittle on edge cases | Not enough variety | Include diverse examples within your domain |
+| 1 | Environment setup | Install dependencies, create project structure, `.env` config |
+| 2 | Download GLM-4-9B | Via `huggingface_hub` to `./models/glm-4-9b-chat`, safetensors format |
+| 3 | vLLM server | Serve locally with `--trust-remote-code`, verify with curl test |
+| 4 | LLM client | `core/llm_client.py` — HTTP communication with vLLM, chat function |
+| 5 | Tool definitions | `core/tools.py` — implement tools, JSON schemas, executor dispatcher |
+| 6 | Base agent class | `core/agent.py` — tool-calling loop, history management, max rounds safety |
 
-### When Fine-Tuning Makes Sense for This Project
-
-Fine-tuning GLM-4-9B on your own data is worth doing once you have:
-- A clear domain (trading code, neuro-symbolic AI research, specific coding patterns)
-- At least 500-1000 high quality examples in that domain
-- A way to evaluate improvement (a test set that measures what you care about)
-
-Tools for fine-tuning: Hugging Face `trl` library or Unsloth (uses less VRAM, faster).
+**Done when:** A single agent calls two tools in sequence and returns a correct answer.
 
 ---
 
-## 8. Implementation Plan
+### Phase 2: ReAct — Prompted Chain of Thought
 
-### Phase 1: Foundation (Get Everything Running)
+**Goal:** Every agent reasons explicitly (Thought → Act → Observe) before every action.
 
-**Goal:** vLLM serving GLM-4-9B locally, basic agent loop working end-to-end.
+| Step | What | Details |
+|---|---|---|
+| 1 | ReAct system prompts | Add Thought/Act/Observe format instructions to agent prompts |
+| 2 | Update agent loop | Parse and display Thought steps separately, store traces for debugging |
+| 3 | Test and compare | Run same tasks with and without ReAct, compare quality and error rate |
 
-Step 1 — Environment setup
-- Install Python dependencies: `vllm`, `transformers`, `huggingface_hub`, `torch`, `accelerate`
-- Set up project folder structure
-- Create `.env` file for any configuration
-
-Step 2 — Download GLM-4-9B
-- Use `huggingface_hub` to download `THUDM/glm-4-9b-chat` to `./models/glm-4-9b-chat`
-- Prefer safetensors format, exclude `.pt` and `.bin` files
-- Verify download integrity
-
-Step 3 — vLLM server
-- Serve from local model folder with `--trust-remote-code` flag
-- Set `--served-model-name glm-4-9b` for clean API naming
-- Set `--max-model-len 8192` to stay within VRAM budget
-- Verify with a simple curl test
-
-Step 4 — Basic LLM client
-- `core/llm_client.py` — handles all HTTP communication with vLLM
-- Implement `chat()` function with messages, tools, and temperature parameters
-- Add basic error handling for connection failures
-
-Step 5 — Tool definitions
-- `core/tools.py` — implement and test each tool function independently
-- Implement tool schemas (JSON) for each tool
-- Implement `execute_tool()` dispatcher
-- Test each tool function in isolation before connecting to the agent
-
-Step 6 — Base agent class
-- `core/agent.py` — the loop that handles tool calls
-- Implement history management for multi-turn memory
-- Add max_tool_rounds safety limit
-- Test with a simple single-agent task
-
-**Completion check:** run a single agent that calls two tools in sequence and returns a correct answer.
-
----
-
-### Phase 2: ReAct Upgrade
-
-**Goal:** All agents reason explicitly before every action.
-
-Step 1 — Update system prompts
-- Add Thought/Act/Observe format instructions to every agent's system prompt
-- The model should output its reasoning before deciding to call a tool
-- Reasoning trace should be visible in verbose mode
-
-Step 2 — Update agent loop
-- Parse and display Thought steps separately from tool calls in verbose output
-- Store thought traces in history for debugging
-- Add a thought log to each agent for post-run analysis
-
-Step 3 — Test and compare
-- Run the same task with and without ReAct
-- Compare output quality and error rate
-- Document which task types benefit most from ReAct
-
-**Completion check:** agent produces visible Thought → Act → Observe cycles. Errors are catchable by reading the thought trace.
+**Done when:** Agent produces visible Thought → Act → Observe cycles. Errors are catchable by reading the thought trace.
 
 ---
 
@@ -375,31 +449,14 @@ Step 3 — Test and compare
 
 **Goal:** Orchestrator delegates tasks to Researcher and Coder, merges results.
 
-Step 1 — Researcher agent
-- `agents/researcher.py` — system prompt focused on information gathering
-- Tools: web_search, read_file
-- Inherits from base Agent with ReAct loop
-- Returns structured summary
+| Step | What | Details |
+|---|---|---|
+| 1 | Researcher agent | `agents/researcher.py` — information gathering, web_search + read_file |
+| 2 | Coder agent | `agents/coder.py` — code writing/testing, run_code + write_file + read_file |
+| 3 | Orchestrator | `agents/orchestrator.py` — JSON plan, delegation, result merging |
+| 4 | Entry point | `run.py` — interactive loop, shows which agent is working |
 
-Step 2 — Coder agent
-- `agents/coder.py` — system prompt focused on code quality and testing
-- Tools: run_python_code, write_file, read_file
-- Self-corrects on errors — runs code, reads error, fixes, runs again
-- Returns working code + execution output
-
-Step 3 — Orchestrator
-- `agents/orchestrator.py` — does not do research or coding itself
-- Prompts LLM to produce a JSON plan with subtasks and agent assignments
-- Handles JSON parsing with fallback for malformed output
-- Runs subtasks (sequentially first, parallel later)
-- Merges results via a final LLM call
-
-Step 4 — Entry point
-- `run.py` — interactive loop, feeds user input to orchestrator
-- Display which agent is working on what in real time
-- Show final merged answer cleanly
-
-**Completion check:** a task requiring both research and coding is correctly split, delegated, and merged into a coherent answer.
+**Done when:** A task requiring both research and coding is correctly split, delegated, and merged.
 
 ---
 
@@ -407,50 +464,30 @@ Step 4 — Entry point
 
 **Goal:** Output quality improves through self-correction cycles.
 
-Step 1 — Reviewer agent
-- `agents/reviewer.py` — system prompt focused on finding errors and gaps
-- Reviews code output: does it run? does it do what was asked?
-- Reviews research output: is it complete? are there obvious gaps?
-- Returns a structured verdict: PASS or FEEDBACK with specific issues
+| Step | What | Details |
+|---|---|---|
+| 1 | Reviewer agent | `agents/reviewer.py` — finds errors and gaps, returns PASS or FEEDBACK |
+| 2 | Feedback loop | Orchestrator routes feedback back to the relevant agent for correction |
+| 3 | Evaluation | Build test set, measure pass rate with and without reviewer |
 
-Step 2 — Feedback loop in orchestrator
-- If reviewer returns FEEDBACK, send it back to the relevant agent
-- Agent corrects based on feedback and resubmits
-- Limit to 2-3 correction rounds to avoid infinite loops
-- Track correction rounds in logs
-
-Step 3 — Evaluation
-- Build a small test set of tasks with known correct answers
-- Measure pass rate with and without reviewer loop
-- Decide if the reviewer adds enough value to justify the extra LLM calls
-
-**Completion check:** a task with a deliberate bug in the code gets caught by the reviewer and corrected by the coder without user intervention.
+**Done when:** A task with a deliberate bug gets caught by the reviewer and corrected by the coder.
 
 ---
 
-### Phase 5: Fine-Tuning (Optional, Later)
+### Phase 5: Test with Real Use Case
 
-**Goal:** Improve GLM-4-9B accuracy on your specific domain.
+**Goal:** Apply the system to a real task and evaluate GLM-4-9B's practical limits.
 
-Step 1 — Data collection
-- Identify your target domain (trading code, research summaries, etc.)
-- Collect or generate 1000+ high quality input/output examples
-- Mix in ~20% general examples to prevent catastrophic forgetting
-- Split into train/validation/test sets
-
-Step 2 — Fine-tuning setup
-- Use Unsloth for memory-efficient training on your 16GB GPU
-- LoRA fine-tuning — trains only a small adapter on top of frozen weights, much less VRAM than full fine-tune
-- Monitor validation loss to catch overfitting early
-
-Step 3 — Evaluation
-- Test on your held-out test set
-- Compare against base GLM-4-9B on the same tasks
-- Only deploy the fine-tuned model if it measurably improves on your target domain without degrading general tasks
+| Step | What | Details |
+|---|---|---|
+| 1 | Pick a use case | Trade research automation or another concrete task |
+| 2 | Build task-specific tools | E.g., parse economic calendar, classify event type |
+| 3 | Run and evaluate | Does it work reliably? Where does it fail? |
+| 4 | Decide next step | Fine-tuning, RAG, distillation, or different model |
 
 ---
 
-## 9. Project File Structure
+## 12. Project Structure
 
 ```
 multi_agent/
@@ -458,10 +495,10 @@ multi_agent/
 ├── README.md                    ← This document
 ├── .env                         ← Configuration (model path, vLLM URL, etc.)
 ├── requirements.txt             ← All Python dependencies
-├── run.py                       ← Entry point, interactive loop
+├── run.py                       ← Entry point — interactive loop
 │
 ├── models/
-│   └── glm-4-9b-chat/           ← Downloaded model weights (local)
+│   └── glm-4-9b-chat/          ← Downloaded model weights (local)
 │
 ├── core/
 │   ├── llm_client.py            ← vLLM HTTP communication
@@ -478,14 +515,14 @@ multi_agent/
 │   └── agent_traces/            ← Thought/Act/Observe traces per run
 │
 └── tests/
-    ├── test_tools.py            ← Unit tests for each tool function
+    ├── test_tools.py            ← Unit tests for each tool
     ├── test_agents.py           ← Integration tests per agent
     └── eval_tasks.json          ← Test tasks with expected outputs
 ```
 
 ---
 
-## 10. Technology Stack
+## 13. Technology Stack
 
 | Component | Technology | Why |
 |---|---|---|
@@ -495,17 +532,18 @@ multi_agent/
 | Model download | huggingface_hub | Official HuggingFace download tool |
 | HTTP client | requests | Simple, no overhead |
 | Code execution tool | subprocess | Built-in Python, no extra dependencies |
-| Fine-tuning (Phase 5) | Unsloth + LoRA | Memory efficient, works on 16GB GPU |
-| Vector DB for RAG (future) | ChromaDB or Qdrant | Local, no cloud dependency |
+| Fine-tuning (later) | Unsloth + LoRA | Memory efficient, works on 16GB GPU |
+| Vector DB (later) | ChromaDB or Qdrant | Local, no cloud dependency |
 
 ---
 
-## Quick Reference — Key Decisions Made
+## Quick Reference — Key Decisions
 
 | Decision | Choice | Reason |
 |---|---|---|
 | GLM-5 vs GLM-4-9B | GLM-4-9B | GLM-5 requires 8 GPUs, too large for hardware |
 | Framework vs Pure Python | Pure Python | Full control, no abstraction hiding bugs |
-| Tool-calling vs ReAct vs Multi-agent | Multi-agent with ReAct internally | Best output quality for complex tasks |
-| Fine-tune vs RAG for domain knowledge | RAG first, fine-tune later | RAG is faster to implement, fine-tune when data is ready |
+| Agent patterns | ReAct + Multi-Agent | ReAct for reasoning, multi-agent for task coordination |
+| Trained vs Prompted CoT | Prompted (ReAct) | Cannot add trained CoT to GLM-4-9B, but can design reasoning chains via prompts |
+| Fine-tune vs RAG vs Distillation | Decide after testing | Need to understand GLM-4-9B's limits on real tasks first |
 | Local vs API model | Local | Privacy, cost, and fine-tuning control |
