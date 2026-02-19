@@ -1,37 +1,53 @@
 # ============================================================
 # FILE: run.py
 # ============================================================
-# The main entry point. Run this to talk to the agent.
+# The main entry point. Run this to talk to the agent system.
 #
 # Usage: python run.py
 #
-# What it does:
-#   1. Checks if Ollama is running and model is available
-#   2. Creates a ReAct agent with all tools
-#   3. Loops: you type a task → agent reasons through it → prints answer
-#   4. Type 'quit' to exit
-#   5. Traces are saved to logs/agent_traces/ after each task
+# Two modes:
+#   1. single — one ReAct agent with all tools (Phase 2)
+#   2. multi  — orchestrator + specialist agents (Phase 3)
+#
+# You can switch modes to compare results on the same task.
+# Type 'mode' during a session to switch, 'quit' to exit.
 # ============================================================
 
 import os
 from dotenv import load_dotenv
 from core.agent import Agent
 from core import llm_client
+from agents.orchestrator import Orchestrator
 
 load_dotenv()
 
 
-SYSTEM_PROMPT = """You are a helpful assistant with access to tools.
+SINGLE_AGENT_PROMPT = """You are a helpful assistant with access to tools.
 
 When a user asks you something, decide if you need to use a tool or can answer directly.
 Always think step by step before acting. Explain your reasoning clearly.
 After gathering all information you need, give a clear, direct final answer."""
 
 
+def run_single_agent(user_input, agent):
+    """Run task through a single ReAct agent."""
+    answer = agent.run(user_input)
+    trace_path = agent.save_trace()
+    print(f"\n  [Trace saved to {trace_path}]")
+    return answer
+
+
+def run_multi_agent(user_input, orchestrator):
+    """Run task through the orchestrator + specialists."""
+    answer = orchestrator.run(user_input)
+    trace_path = orchestrator.save_trace()
+    print(f"\n  [Trace saved to {trace_path}]")
+    return answer
+
+
 def main():
     print("=" * 60)
-    print("Multi-Agent System — Phase 2: ReAct Agent")
-    print("  Thought → Act → Observe loop")
+    print("Multi-Agent System — Phase 3: Orchestrator + Specialists")
     print("=" * 60)
 
     ok, status = llm_client.health_check()
@@ -48,13 +64,21 @@ def main():
         print("  3. If Ollama not installed: https://ollama.com/download/windows")
         return
 
-    agent = Agent(
+    # Create both runners
+    single_agent = Agent(
         name="GeneralAgent",
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=SINGLE_AGENT_PROMPT,
         tool_names=["calculate", "read_file", "write_file", "run_python_code", "web_search"],
     )
+    orchestrator = Orchestrator()
 
-    print("\nReady. Type your task (or 'quit' to exit).\n")
+    # Default to multi-agent mode (Phase 3)
+    mode = "multi"
+
+    print(f"\nMode: {mode}")
+    print("  'mode'  — switch between single / multi")
+    print("  'quit'  — exit")
+    print("\nReady. Type your task.\n")
 
     while True:
         try:
@@ -65,18 +89,24 @@ def main():
 
         if not user_input:
             continue
+
         if user_input.lower() in ("quit", "exit", "q"):
             print("Exiting.")
             break
 
+        if user_input.lower() == "mode":
+            mode = "single" if mode == "multi" else "multi"
+            print(f"\n  Switched to: {mode}\n")
+            continue
+
         print()
-        answer = agent.run(user_input)
+
+        if mode == "single":
+            answer = run_single_agent(user_input, single_agent)
+        else:
+            answer = run_multi_agent(user_input, orchestrator)
+
         print(f"\nAnswer: {answer}\n")
-
-        # Save the trace for this task so you can review the reasoning later
-        trace_path = agent.save_trace()
-        print(f"  [Trace saved to {trace_path}]")
-
         print("-" * 40)
 
 
