@@ -7,9 +7,10 @@
 #
 # What it does:
 #   1. Checks if Ollama is running and model is available
-#   2. Creates an agent with all tools
-#   3. Loops: you type a task → agent works on it → prints answer
+#   2. Creates a ReAct agent with all tools
+#   3. Loops: you type a task → agent reasons through it → prints answer
 #   4. Type 'quit' to exit
+#   5. Traces are saved to logs/agent_traces/ after each task
 # ============================================================
 
 import os
@@ -23,19 +24,20 @@ load_dotenv()
 SYSTEM_PROMPT = """You are a helpful assistant with access to tools.
 
 When a user asks you something, decide if you need to use a tool or can answer directly.
-If you use a tool, wait for the result, then give your final answer.
-Always give a clear, direct final answer."""
+Always think step by step before acting. Explain your reasoning clearly.
+After gathering all information you need, give a clear, direct final answer."""
 
 
 def main():
     print("=" * 60)
-    print("Multi-Agent System — Phase 1: Basic Agent")
+    print("Multi-Agent System — Phase 2: ReAct Agent")
+    print("  Thought → Act → Observe loop")
     print("=" * 60)
 
     ok, status = llm_client.health_check()
     print(f"\n{status}")
-    print(f"  Model:          {llm_client.MODEL_NAME}")
-    print(f"  Ollama URL:     {llm_client.BASE_URL}")
+    print(f"  Model:           {llm_client.MODEL_NAME}")
+    print(f"  Ollama URL:      {llm_client.BASE_URL}")
     print(f"  Max tool rounds: {os.getenv('MAX_TOOL_ROUNDS', '10')}")
     print(f"  Verbose:         {os.getenv('VERBOSE', 'true')}")
 
@@ -70,6 +72,11 @@ def main():
         print()
         answer = agent.run(user_input)
         print(f"\nAnswer: {answer}\n")
+
+        # Save the trace for this task so you can review the reasoning later
+        trace_path = agent.save_trace()
+        print(f"  [Trace saved to {trace_path}]")
+
         print("-" * 40)
 
 
