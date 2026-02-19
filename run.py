@@ -12,17 +12,19 @@
 #   4. Type 'quit' to exit
 # ============================================================
 
+import os
+from dotenv import load_dotenv
 from core.agent import Agent
 from core import llm_client
+
+load_dotenv()
 
 
 SYSTEM_PROMPT = """You are a helpful assistant with access to tools.
 
 When a user asks you something, decide if you need to use a tool or can answer directly.
-If you use a tool, look at the result and then give your final answer.
-
-Available tools will be provided to you. Use them when needed.
-Always give a clear, direct final answer after using tools."""
+If you use a tool, wait for the result, then give your final answer.
+Always give a clear, direct final answer."""
 
 
 def main():
@@ -32,6 +34,10 @@ def main():
 
     ok, status = llm_client.health_check()
     print(f"\n{status}")
+    print(f"  Model:          {llm_client.MODEL_NAME}")
+    print(f"  Ollama URL:     {llm_client.BASE_URL}")
+    print(f"  Max tool rounds: {os.getenv('MAX_TOOL_ROUNDS', '10')}")
+    print(f"  Verbose:         {os.getenv('VERBOSE', 'true')}")
 
     if not ok:
         print("\nTroubleshooting:")

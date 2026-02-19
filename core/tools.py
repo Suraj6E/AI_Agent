@@ -3,8 +3,12 @@
 # ============================================================
 # Three parts:
 #   1. Tool implementations — actual Python functions
-#   2. Tool schemas — JSON descriptions for the LLM
+#   2. Tool descriptions — plain text for the system prompt
 #   3. Dispatcher — routes a tool call to the correct function
+#
+# We no longer use JSON schemas (the old TOOL_SCHEMAS).
+# Instead, we describe tools in plain text inside the system prompt
+# and the model outputs a [TOOL_CALL] tag that our code parses.
 # ============================================================
 
 import subprocess
@@ -89,100 +93,51 @@ def web_search(query: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 2. Tool schemas — tells the LLM what tools exist and what arguments they take
+# 2. Tool descriptions — plain text that goes into the system prompt
 # ---------------------------------------------------------------------------
 
-TOOL_SCHEMAS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "calculate",
-            "description": "Evaluate a math expression. Supports +, -, *, /, parentheses, and decimal numbers.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "expression": {
-                        "type": "string",
-                        "description": "The math expression to evaluate, e.g. '(15 + 27) * 3'",
-                    }
-                },
-                "required": ["expression"],
-            },
-        },
+TOOL_DESCRIPTIONS = {
+    "calculate": {
+        "description": "Evaluate a math expression. Supports +, -, *, /, parentheses, and decimals.",
+        "arguments": {"expression": "string — the math expression, e.g. '(15 + 27) * 3'"},
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "read_file",
-            "description": "Read the contents of a local file and return its text.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "file_path": {
-                        "type": "string",
-                        "description": "Path to the file to read",
-                    }
-                },
-                "required": ["file_path"],
-            },
-        },
+    "read_file": {
+        "description": "Read the contents of a local file and return its text.",
+        "arguments": {"file_path": "string — path to the file to read"},
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "write_file",
-            "description": "Write content to a file. Creates the file and parent directories if they don't exist.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "file_path": {
-                        "type": "string",
-                        "description": "Path to the file to write",
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "The content to write to the file",
-                    },
-                },
-                "required": ["file_path", "content"],
-            },
-        },
+    "write_file": {
+        "description": "Write content to a file. Creates the file and parent directories if needed.",
+        "arguments": {"file_path": "string — path to write to", "content": "string — text to write"},
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "run_python_code",
-            "description": "Execute Python code and return the output. Use this for calculations, data processing, or testing code.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "code": {
-                        "type": "string",
-                        "description": "Python code to execute",
-                    }
-                },
-                "required": ["code"],
-            },
-        },
+    "run_python_code": {
+        "description": "Execute Python code and return stdout/stderr. Use for calculations or testing code.",
+        "arguments": {"code": "string — Python code to execute"},
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "web_search",
-            "description": "Search the web for information. (Not yet implemented — placeholder for later phase.)",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "The search query",
-                    }
-                },
-                "required": ["query"],
-            },
-        },
+    "web_search": {
+        "description": "Search the web for information. (Not yet implemented — placeholder.)",
+        "arguments": {"query": "string — the search query"},
     },
-]
+}
+
+
+def get_tool_descriptions(tool_names: list = None) -> str:
+    """
+    Generate a plain-text description of tools for the system prompt.
+    If tool_names is None, includes all tools.
+    """
+    if tool_names is None:
+        tool_names = list(TOOL_DESCRIPTIONS.keys())
+
+    lines = []
+    for name in tool_names:
+        if name not in TOOL_DESCRIPTIONS:
+            continue
+        info = TOOL_DESCRIPTIONS[name]
+        args_str = json.dumps(info["arguments"])
+        lines.append(f"- {name}: {info['description']}")
+        lines.append(f"  Arguments: {args_str}")
+
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -209,10 +164,3 @@ def execute_tool(tool_name: str, arguments: dict) -> str:
         return f"Error: wrong arguments for tool '{tool_name}': {e}"
     except Exception as e:
         return f"Error executing tool '{tool_name}': {e}"
-
-
-def get_tool_schemas(tool_names: list = None) -> list:
-    if tool_names is None:
-        return TOOL_SCHEMAS
-
-    return [s for s in TOOL_SCHEMAS if s["function"]["name"] in tool_names]
