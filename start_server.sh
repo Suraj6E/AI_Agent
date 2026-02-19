@@ -1,4 +1,5 @@
 #!/bin/bash
+# This file can be removed for windows — replaced by start_server.py (Windows-compatible)
 
 # Start vLLM server for GLM-4-9B
 #

@@ -31,7 +31,7 @@ def download():
     )
 
     print(f"\nDone. Model saved to: {target.resolve()}")
-    print("Next step: start the vLLM server with start_server.py or the command in start_server.sh")
+    print("Next step: start the vLLM server with: python start_server.py")
 
 
 if __name__ == "__main__":
