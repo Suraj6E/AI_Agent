@@ -21,6 +21,12 @@
 # If the plan has only one subtask, it still delegates — the
 # orchestrator never does the work directly.
 # ============================================================
+#
+# Changes:
+#   - Errors during planning and delegation are now recorded in self.trace
+#     so trace files are never empty on failure.
+#   - Subtask errors are recorded with type "error" for easy filtering.
+# ============================================================
 
 import json
 import re
@@ -156,6 +162,11 @@ class Orchestrator:
 
         if plan_raw.startswith("[ERROR]"):
             self._log(f"Planning failed: {plan_raw}")
+            self.trace.append({
+                "step": "plan",
+                "type": "error",
+                "error": plan_raw,
+            })
             return f"Orchestrator error during planning: {plan_raw}"
 
         self._log(f"Raw plan:\n{plan_raw}\n")
@@ -205,13 +216,19 @@ class Orchestrator:
 
             self._log(f"\nSubtask {subtask_id} result: {result[:200]}")
 
-            results.append({
+            result_entry = {
                 "id": subtask_id,
                 "agent": agent_type,
                 "task": task_text,
                 "result": result,
                 "trace": agent.get_trace(),
-            })
+            }
+
+            # Tag errors so they're easy to find in trace files
+            if result.startswith("Agent error:") or result.startswith("[ERROR]"):
+                result_entry["type"] = "error"
+
+            results.append(result_entry)
 
             self.trace.append({
                 "step": f"subtask_{subtask_id}",

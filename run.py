@@ -54,6 +54,8 @@ def main():
     print(f"\n{status}")
     print(f"  Model:           {llm_client.MODEL_NAME}")
     print(f"  Ollama URL:      {llm_client.BASE_URL}")
+    print(f"  LLM timeout:     {llm_client.TIMEOUT}s")
+    print(f"  LLM retries:     {llm_client.MAX_RETRIES}")
     print(f"  Max tool rounds: {os.getenv('MAX_TOOL_ROUNDS', '10')}")
     print(f"  Verbose:         {os.getenv('VERBOSE', 'true')}")
 
