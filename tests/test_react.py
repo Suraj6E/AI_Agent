@@ -18,6 +18,8 @@ from core.agent import (
     parse_react_answer,
     extract_thinking,
     build_system_prompt,
+    clean_final_answer,
+    _extract_first_json,
 )
 
 
@@ -149,6 +151,152 @@ def test_full_react_cycle_parsing():
     print("  full react cycle: PASSED")
 
 
+# ---------------------------------------------------------------------------
+# New tests for _extract_first_json (balanced brace extraction)
+# ---------------------------------------------------------------------------
+
+def test_extract_first_json_simple():
+    """Simple JSON object should extract correctly."""
+    text = '{"name": "calculate", "arguments": {"expression": "2+3"}}'
+    result = _extract_first_json(text)
+    assert result is not None
+    assert '"calculate"' in result
+    print("  extract first json simple: PASSED")
+
+
+def test_extract_first_json_with_surrounding_text():
+    """JSON embedded in other text should still extract."""
+    text = 'some prefix {"name": "test", "arguments": {}} some suffix'
+    result = _extract_first_json(text)
+    assert result == '{"name": "test", "arguments": {}}'
+    print("  extract first json with text: PASSED")
+
+
+def test_extract_first_json_nested():
+    """Nested JSON should extract the complete outer object."""
+    text = '{"name": "write_file", "arguments": {"path": "a.txt", "content": "hello"}}'
+    result = _extract_first_json(text)
+    assert result is not None
+    import json
+    parsed = json.loads(result)
+    assert parsed["name"] == "write_file"
+    assert parsed["arguments"]["content"] == "hello"
+    print("  extract first json nested: PASSED")
+
+
+def test_extract_first_json_with_string_braces():
+    """Braces inside JSON strings should not break the extraction."""
+    text = '{"name": "test", "arguments": {"code": "if x > 0 { return }"}}'
+    result = _extract_first_json(text)
+    assert result is not None
+    import json
+    parsed = json.loads(result)
+    assert "{" in parsed["arguments"]["code"]
+    print("  extract first json with string braces: PASSED")
+
+
+def test_extract_first_json_stops_at_first():
+    """When multiple JSON objects exist, only the first is extracted."""
+    text = (
+        '{"name": "write_file", "arguments": {"path": "a.txt", "content": "hi"}}\n'
+        'Observe: done\n'
+        '{"name": "read_file", "arguments": {"file_path": "a.txt"}}'
+    )
+    result = _extract_first_json(text)
+    assert result is not None
+    import json
+    parsed = json.loads(result)
+    assert parsed["name"] == "write_file"
+    print("  extract first json stops at first: PASSED")
+
+
+def test_extract_first_json_no_json():
+    """No JSON at all should return None."""
+    result = _extract_first_json("just plain text here")
+    assert result is None
+    print("  extract first json no json: PASSED")
+
+
+# ---------------------------------------------------------------------------
+# New tests for multi-tool-call hallucination (the actual bug)
+# ---------------------------------------------------------------------------
+
+def test_parse_tool_call_multi_hallucination():
+    """
+    Model hallucinates a full conversation with two tool calls.
+    parse_tool_call should extract only the FIRST tool call successfully.
+    This was the bug: greedy regex matched across both, creating invalid JSON.
+    """
+    text = (
+        'Thought: I need to write the essay and create an image.\n'
+        'Act: [TOOL_CALL] {"name": "write_file", "arguments": {"file_path": "essay.txt", "content": "Cats are great."}}\n'
+        '\n'
+        'Observe: Successfully wrote 15 characters to essay.txt\n'
+        '\n'
+        'Thought: Now create the image.\n'
+        'Act: [TOOL_CALL] {"name": "write_file", "arguments": {"file_path": "cat.txt", "content": "meow"}}\n'
+        '\n'
+        'Observe: Successfully wrote 4 characters to cat.txt\n'
+        '\n'
+        'Answer: Done!'
+    )
+    tool_name, args = parse_tool_call(text)
+    assert tool_name == "write_file", f"Expected write_file, got {tool_name}"
+    assert args["file_path"] == "essay.txt", f"Expected essay.txt, got {args.get('file_path')}"
+    assert args["content"] == "Cats are great."
+    print("  multi-tool-call hallucination: PASSED")
+
+
+# ---------------------------------------------------------------------------
+# New tests for clean_final_answer
+# ---------------------------------------------------------------------------
+
+def test_clean_final_answer_with_answer_tag():
+    """If Answer: tag exists, extract just that."""
+    text = (
+        'Thought: I am done.\n'
+        'Answer: The result is 42.'
+    )
+    result = clean_final_answer(text)
+    assert result == "The result is 42."
+    print("  clean answer with tag: PASSED")
+
+
+def test_clean_final_answer_hallucinated_conversation():
+    """Strip a full hallucinated Thought/Act/Observe conversation."""
+    text = (
+        'Thought: I need to write a file.\n'
+        'Act: [TOOL_CALL] {"name": "write_file", "arguments": {"file_path": "a.txt", "content": "hello"}}\n'
+        '\n'
+        'Observe: Successfully wrote 5 characters to a.txt\n'
+        '\n'
+        'Thought: Now I am done.\n'
+        'Answer: I wrote the file for you.'
+    )
+    result = clean_final_answer(text)
+    assert result == "I wrote the file for you."
+    assert "TOOL_CALL" not in result
+    assert "Observe:" not in result
+    print("  clean hallucinated conversation: PASSED")
+
+
+def test_clean_final_answer_thought_only():
+    """If only Thought: lines with no Answer:, extract the thought content."""
+    text = 'Thought: The answer is simply 42.'
+    result = clean_final_answer(text)
+    assert "42" in result
+    assert not result.startswith("Thought:")
+    print("  clean thought only: PASSED")
+
+
+def test_clean_final_answer_plain_text():
+    """Plain text without any tags should pass through unchanged."""
+    text = "The capital of France is Paris."
+    result = clean_final_answer(text)
+    assert result == text
+    print("  clean plain text: PASSED")
+
+
 if __name__ == "__main__":
     print("Running Phase 2 ReAct parsing tests...\n")
     test_parse_thought_with_act()
@@ -160,4 +308,22 @@ if __name__ == "__main__":
     test_deepseek_thinking_plus_react()
     test_system_prompt_contains_react_format()
     test_full_react_cycle_parsing()
+
+    print("\n--- JSON extraction tests ---\n")
+    test_extract_first_json_simple()
+    test_extract_first_json_with_surrounding_text()
+    test_extract_first_json_nested()
+    test_extract_first_json_with_string_braces()
+    test_extract_first_json_stops_at_first()
+    test_extract_first_json_no_json()
+
+    print("\n--- Bug fix tests ---\n")
+    test_parse_tool_call_multi_hallucination()
+
+    print("\n--- clean_final_answer tests ---\n")
+    test_clean_final_answer_with_answer_tag()
+    test_clean_final_answer_hallucinated_conversation()
+    test_clean_final_answer_thought_only()
+    test_clean_final_answer_plain_text()
+
     print("\nAll Phase 2 tests passed.")

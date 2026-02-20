@@ -114,17 +114,62 @@ def parse_tool_call(text):
     idx = text.index(TOOL_CALL_TAG) + len(TOOL_CALL_TAG)
     remaining = text[idx:].strip()
 
-    json_match = re.search(r'\{.*\}', remaining, re.DOTALL)
-    if not json_match:
+    # Extract only the FIRST complete JSON object using balanced braces.
+    # The old greedy regex (r'\{.*\}' with DOTALL) would span across
+    # multiple tool calls if the model hallucinated a full conversation
+    # in one response, producing invalid JSON and failing silently.
+    json_str = _extract_first_json(remaining)
+    if not json_str:
         return None, None
 
     try:
-        parsed = json.loads(json_match.group())
+        parsed = json.loads(json_str)
         tool_name = parsed.get("name")
         arguments = parsed.get("arguments", {})
         return tool_name, arguments
     except json.JSONDecodeError:
         return None, None
+
+
+def _extract_first_json(text):
+    """
+    Extract the first complete JSON object from text using brace counting.
+    Returns the JSON string or None if no balanced object found.
+    """
+    start = text.find('{')
+    if start == -1:
+        return None
+
+    depth = 0
+    in_string = False
+    escape_next = False
+
+    for i in range(start, len(text)):
+        c = text[i]
+
+        if escape_next:
+            escape_next = False
+            continue
+
+        if c == '\\' and in_string:
+            escape_next = True
+            continue
+
+        if c == '"' and not escape_next:
+            in_string = not in_string
+            continue
+
+        if in_string:
+            continue
+
+        if c == '{':
+            depth += 1
+        elif c == '}':
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+
+    return None
 
 
 def extract_thinking(text):
@@ -158,6 +203,52 @@ def parse_react_answer(text):
     if match:
         return match.group(1).strip()
     return None
+
+
+def clean_final_answer(text):
+    """
+    Strip leaked ReAct formatting from the final answer shown to the user.
+    Removes Thought:/Act:/Observe: lines and [TOOL_CALL] blocks that the
+    model sometimes includes when it hallucinates a full conversation.
+    """
+    # If there's an Answer: tag, extract just that part
+    answer = parse_react_answer(text)
+    if answer:
+        return answer
+
+    # Otherwise strip ReAct tags line by line
+    lines = text.split('\n')
+    cleaned = []
+    skip_until_next = False
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Skip hallucinated Observe: lines (fake tool results)
+        if stripped.startswith('Observe:'):
+            skip_until_next = False
+            continue
+
+        # Skip Act: / [TOOL_CALL] lines
+        if stripped.startswith('Act:') or TOOL_CALL_TAG in stripped:
+            skip_until_next = True
+            continue
+
+        if skip_until_next and stripped.startswith('Thought:'):
+            skip_until_next = False
+
+        # Strip "Thought:" prefix but keep the content
+        if stripped.startswith('Thought:'):
+            content = stripped[len('Thought:'):].strip()
+            if content:
+                cleaned.append(content)
+            continue
+
+        if not skip_until_next:
+            cleaned.append(line)
+
+    result = '\n'.join(cleaned).strip()
+    return result if result else text
 
 
 # ---------------------------------------------------------------------------
@@ -223,14 +314,15 @@ class Agent:
             if tool_name is None:
                 # No tool call and no Answer: tag — treat entire response as final answer
                 self._log(f"  (no tool call, no Answer: tag — treating as final answer)")
+                cleaned = clean_final_answer(visible_text)
                 self.trace.append({
                     "round": round_num,
                     "type": "final_answer",
                     "thought": thought,
-                    "answer": visible_text,
+                    "answer": cleaned,
                     "raw": response_text,
                 })
-                return visible_text
+                return cleaned
 
             # Tool call found — execute it
             self._log(f"  Act: {tool_name}({json.dumps(arguments)[:100]})")
@@ -272,7 +364,7 @@ class Agent:
         answer = parse_react_answer(response_text)
         if answer:
             return answer
-        return response_text
+        return clean_final_answer(response_text)
 
     def get_trace(self):
         return self.trace
