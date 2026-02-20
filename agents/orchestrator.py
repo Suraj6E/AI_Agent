@@ -1,31 +1,38 @@
 # ============================================================
 # FILE: agents/orchestrator.py
 # ============================================================
-# Phase 3: Orchestrator
+# Phase 4: Orchestrator with Reviewer + Feedback Loop
 #
 # Receives a user task and:
 #   1. Asks the LLM to produce a JSON plan with subtasks
 #   2. Parses the plan
 #   3. Delegates each subtask to the right specialist agent
-#   4. Collects all results
-#   5. Asks the LLM to merge results into a final answer
+#   4. Reviews each result via the Reviewer agent        ← NEW
+#   5. If feedback, re-delegates to original agent       ← NEW
+#   6. Collects all results
+#   7. Asks the LLM to merge results into a final answer
 #
 # The orchestrator does NOT do research or coding itself.
-# It only plans, delegates, and merges.
+# It only plans, delegates, reviews, and merges.
 #
 # Specialist agents available:
 #   - researcher: information gathering (web_search, read_file)
 #   - coder: code writing and testing (run_python_code, write_file, read_file)
+#   - reviewer: checks output quality, returns PASS or FEEDBACK
 #   - general: any task, all tools (fallback)
-#
-# If the plan has only one subtask, it still delegates — the
-# orchestrator never does the work directly.
 # ============================================================
 #
-# Changes:
-#   - Errors during planning and delegation are now recorded in self.trace
-#     so trace files are never empty on failure.
+# Phase 3 changes (kept):
+#   - Errors during planning and delegation are recorded in self.trace.
 #   - Subtask errors are recorded with type "error" for easy filtering.
+#
+# Phase 4 changes:
+#   - After each subtask, the result is sent to a Reviewer agent.
+#   - Reviewer returns VERDICT: PASS or VERDICT: FEEDBACK with specifics.
+#   - On FEEDBACK, the original agent type is re-created and given the
+#     feedback to fix. This repeats up to MAX_REVIEW_CYCLES times.
+#   - Review can be disabled via REVIEW_ENABLED=false in .env.
+#   - All review steps are recorded in the trace.
 # ============================================================
 
 import json
@@ -37,10 +44,13 @@ from core import llm_client
 from core.agent import Agent
 from agents.researcher import create_researcher
 from agents.coder import create_coder
+from agents.reviewer import create_reviewer
 
 load_dotenv()
 
 VERBOSE = os.getenv("VERBOSE", "true").lower() == "true"
+REVIEW_ENABLED = os.getenv("REVIEW_ENABLED", "true").lower() == "true"
+MAX_REVIEW_CYCLES = int(os.getenv("MAX_REVIEW_CYCLES", "2"))
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +146,33 @@ def parse_plan(raw_text):
 
 
 # ---------------------------------------------------------------------------
+# Review verdict parsing
+# ---------------------------------------------------------------------------
+
+def parse_verdict(review_text):
+    """
+    Parse the reviewer's output for VERDICT: PASS or VERDICT: FEEDBACK.
+    Returns ("PASS", None) or ("FEEDBACK", "<feedback details>").
+    If no verdict found, defaults to PASS (don't block on parse failure).
+    """
+    # Strip <think> tags if present
+    clean = re.sub(r'<think>.*?</think>', '', review_text, flags=re.DOTALL).strip()
+
+    # Look for VERDICT: PASS
+    if re.search(r'VERDICT:\s*PASS', clean, re.IGNORECASE):
+        return "PASS", None
+
+    # Look for VERDICT: FEEDBACK followed by details
+    match = re.search(r'VERDICT:\s*FEEDBACK\s*(.*)', clean, re.DOTALL | re.IGNORECASE)
+    if match:
+        feedback = match.group(1).strip()
+        return "FEEDBACK", feedback if feedback else "Reviewer flagged issues but gave no details."
+
+    # No verdict found — default to PASS to avoid blocking
+    return "PASS", None
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator class
 # ---------------------------------------------------------------------------
 
@@ -147,6 +184,7 @@ class Orchestrator:
         self._log("=" * 50)
         self._log("ORCHESTRATOR STARTED")
         self._log(f"Task: {user_task}")
+        self._log(f"Review: {'ON' if REVIEW_ENABLED else 'OFF'} (max {MAX_REVIEW_CYCLES} cycles)")
         self._log("=" * 50)
 
         self.trace = []
@@ -187,7 +225,7 @@ class Orchestrator:
             "subtasks": subtasks,
         })
 
-        # --- Step 2: Delegate ---
+        # --- Step 2: Delegate + Review ---
         self._log("\n[Step 2] Delegating to specialists...")
 
         results = []
@@ -211,20 +249,32 @@ class Orchestrator:
             else:
                 task_with_context = task_text
 
+            # --- Run the specialist ---
             agent = self._create_agent(agent_type, subtask_id)
             result = agent.run(task_with_context)
 
             self._log(f"\nSubtask {subtask_id} result: {result[:200]}")
+
+            agent_traces = [agent.get_trace()]
+
+            # --- Review + Feedback loop (Phase 4) ---
+            # Skip review for error results (no point reviewing a timeout message)
+            is_error = result.startswith("Agent error:") or result.startswith("[ERROR]")
+
+            if REVIEW_ENABLED and not is_error:
+                result, review_traces = self._review_loop(
+                    subtask_id, agent_type, task_text, result
+                )
+                agent_traces.extend(review_traces)
 
             result_entry = {
                 "id": subtask_id,
                 "agent": agent_type,
                 "task": task_text,
                 "result": result,
-                "trace": agent.get_trace(),
+                "trace": agent_traces,
             }
 
-            # Tag errors so they're easy to find in trace files
             if result.startswith("Agent error:") or result.startswith("[ERROR]"):
                 result_entry["type"] = "error"
 
@@ -235,7 +285,7 @@ class Orchestrator:
                 "agent": agent_type,
                 "task": task_text,
                 "result": result,
-                "agent_trace": agent.get_trace(),
+                "agent_trace": agent_traces,
             })
 
         # --- Step 3: Merge ---
@@ -243,7 +293,6 @@ class Orchestrator:
         self._log("[Step 3] Merging results...")
 
         if len(results) == 1:
-            # Single subtask — no merge needed, just return the result directly
             final_answer = results[0]["result"]
             self._log("Single subtask — returning result directly.")
         else:
@@ -258,6 +307,82 @@ class Orchestrator:
 
         return final_answer
 
+    # ---------------------------------------------------------------------------
+    # Review + Feedback loop (Phase 4)
+    # ---------------------------------------------------------------------------
+
+    def _review_loop(self, subtask_id, agent_type, task_text, result):
+        """
+        Send the result to a Reviewer agent. If FEEDBACK, re-run the
+        original agent with the feedback. Repeats up to MAX_REVIEW_CYCLES.
+        Returns (final_result, list_of_review_traces).
+        """
+        review_traces = []
+
+        for cycle in range(1, MAX_REVIEW_CYCLES + 1):
+            self._log(f"\n  [Review cycle {cycle}/{MAX_REVIEW_CYCLES}]")
+
+            # Create a reviewer for this cycle
+            reviewer = create_reviewer(name=f"Reviewer_{subtask_id}_c{cycle}")
+
+            review_input = (
+                f"ORIGINAL TASK:\n{task_text}\n\n"
+                f"AGENT TYPE: {agent_type}\n\n"
+                f"RESULT TO REVIEW:\n{result}"
+            )
+
+            review_output = reviewer.run(review_input)
+            review_traces.append(reviewer.get_trace())
+
+            self._log(f"  Review output: {review_output[:200]}")
+
+            verdict, feedback = parse_verdict(review_output)
+
+            self._log(f"  Verdict: {verdict}")
+
+            self.trace.append({
+                "step": f"review_{subtask_id}_c{cycle}",
+                "verdict": verdict,
+                "feedback": feedback,
+                "review_raw": review_output,
+            })
+
+            if verdict == "PASS":
+                self._log(f"  Result passed review.")
+                return result, review_traces
+
+            # --- FEEDBACK: re-run the original agent with corrections ---
+            self._log(f"  Feedback: {feedback[:200]}")
+            self._log(f"  Re-running {agent_type} with feedback...")
+
+            retry_agent = self._create_agent(agent_type, f"{subtask_id}_retry{cycle}")
+
+            retry_input = (
+                f"ORIGINAL TASK:\n{task_text}\n\n"
+                f"YOUR PREVIOUS RESULT:\n{result}\n\n"
+                f"REVIEWER FEEDBACK — please fix these issues:\n{feedback}\n\n"
+                f"Please produce an improved result that addresses the feedback."
+            )
+
+            result = retry_agent.run(retry_input)
+            review_traces.append(retry_agent.get_trace())
+
+            self._log(f"  Retry result: {result[:200]}")
+
+            self.trace.append({
+                "step": f"retry_{subtask_id}_c{cycle}",
+                "agent": agent_type,
+                "result": result,
+            })
+
+        # Exhausted review cycles — return whatever we have
+        self._log(f"  Max review cycles reached. Using latest result.")
+        return result, review_traces
+
+    # ---------------------------------------------------------------------------
+    # Agent creation
+    # ---------------------------------------------------------------------------
+
     def _create_agent(self, agent_type, subtask_id):
         """Create the right specialist agent based on type."""
         name = f"{agent_type.capitalize()}_{subtask_id}"
@@ -266,6 +391,8 @@ class Orchestrator:
             return create_researcher(name=name)
         elif agent_type == "coder":
             return create_coder(name=name)
+        elif agent_type == "reviewer":
+            return create_reviewer(name=name)
         else:
             return create_general(name=name)
 
@@ -299,7 +426,6 @@ class Orchestrator:
         merged = llm_client.chat(messages=merge_messages, temperature=0.3)
 
         if merged.startswith("[ERROR]"):
-            # If merge fails, concatenate results as fallback
             self._log(f"Merge LLM call failed: {merged}")
             return "\n\n".join(r["result"] for r in results)
 

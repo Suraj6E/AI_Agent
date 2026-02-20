@@ -47,7 +47,7 @@ def run_multi_agent(user_input, orchestrator):
 
 def main():
     print("=" * 60)
-    print("Multi-Agent System — Phase 3: Orchestrator + Specialists")
+    print("Multi-Agent System — Phase 4: Reviewer + Feedback Loop")
     print("=" * 60)
 
     ok, status = llm_client.health_check()
@@ -57,6 +57,8 @@ def main():
     print(f"  LLM timeout:     {llm_client.TIMEOUT}s")
     print(f"  LLM retries:     {llm_client.MAX_RETRIES}")
     print(f"  Max tool rounds: {os.getenv('MAX_TOOL_ROUNDS', '10')}")
+    print(f"  Review:          {os.getenv('REVIEW_ENABLED', 'true')}")
+    print(f"  Review cycles:   {os.getenv('MAX_REVIEW_CYCLES', '2')}")
     print(f"  Verbose:         {os.getenv('VERBOSE', 'true')}")
 
     if not ok:
